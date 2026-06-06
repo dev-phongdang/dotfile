@@ -22,8 +22,9 @@ map("n", "<C-l>", "<C-w>l", { desc = "Go to right window" })
 -- Resize windows with arrows (yes, the one good use of arrow keys)
 map("n", "<C-Up>", "<cmd>resize +2<cr>", { desc = "Increase height" })
 map("n", "<C-Down>", "<cmd>resize -2<cr>", { desc = "Decrease height" })
-map("n", "<C-Left>", "<cmd>vertical resize -2<cr>", { desc = "Decrease width" })
-map("n", "<C-Right>", "<cmd>vertical resize +2<cr>", { desc = "Increase width" })
+--- Custom resize support MacOS <Ctrl + [>, <Ctrl + ]>
+map("n", "<C-[>", "<cmd>vertical resize -2<cr>", { desc = "Decrease width" })
+map("n", "<C-]>", "<cmd>vertical resize +2<cr>", { desc = "Increase width" })
 
 -- Buffer navigation
 map("n", "<S-h>", "<cmd>bprevious<cr>", { desc = "Previous buffer" })
