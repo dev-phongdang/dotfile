@@ -91,7 +91,7 @@ return {
 
 		-- mason-nvim-dap auto-installs DAP adapters via Mason
 		require("mason-nvim-dap").setup({
-			ensure_installed = { "delve", "python" },
+			ensure_installed = { "delve", "python", "netcoredbg" },
 			automatic_installation = true,
 			handlers = {}, -- use default handlers, customise per-language below
 		})
@@ -195,6 +195,36 @@ return {
 				module = "pytest",
 				args = { "${file}", "-s" },
 				console = "integratedTerminal",
+			},
+		}
+
+		-- .NET / C# uses netcoredbg. mason-nvim-dap registers it as `coreclr`
+		-- automatically; redefine here so we don't depend on handler order.
+		dap.adapters.coreclr = {
+			type = "executable",
+			command = vim.fn.exepath("netcoredbg"),
+			args = { "--interpreter=vscode" },
+		}
+		local function pick_dll()
+			local cwd = vim.fn.getcwd()
+			local matches = vim.fn.glob(cwd .. "/bin/Debug/net*/*.dll", true, true)
+			local default = matches[1] or (cwd .. "/bin/Debug/")
+			return vim.fn.input("Path to dll: ", default, "file")
+		end
+		dap.configurations.cs = {
+			{
+				type = "coreclr",
+				name = "Launch - netcoredbg",
+				request = "launch",
+				program = pick_dll,
+				cwd = "${workspaceFolder}",
+				stopAtEntry = false,
+			},
+			{
+				type = "coreclr",
+				name = "Attach - netcoredbg",
+				request = "attach",
+				processId = require("dap.utils").pick_process,
 			},
 		}
 	end,

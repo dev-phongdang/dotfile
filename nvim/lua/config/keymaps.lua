@@ -58,3 +58,4 @@ map("n", "<leader>se", "<C-w>=", { desc = "Equal width" })
 map("n", "<leader>sx", "<cmd>close<cr>", { desc = "Close split" })
 -- Custom opera
 map("n", "<leader>oo", "o<Esc>", { desc = "Open blank line bellow (stay in normal)" })
+map("n", "<leader>;", "A;<Esc>", { desc = "Add ; at end of line" })
