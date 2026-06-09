@@ -5,6 +5,8 @@ return {
     'nvim-lua/plenary.nvim',
     -- Native fzf sorter (C extension) — much faster for big repos
     { 'nvim-telescope/telescope-fzf-native.nvim', build = 'make' },
+    -- Route vim.ui.select() through telescope (e.g. the .NET debug project picker)
+    'nvim-telescope/telescope-ui-select.nvim',
   },
   cmd = 'Telescope',
   keys = {
@@ -35,7 +37,12 @@ return {
   },
   config = function(_, opts)
     local telescope = require('telescope')
+    -- Render vim.ui.select() as a telescope dropdown. Without a UI backend the
+    -- core inputlist prompt shows with no visible items under noice.nvim.
+    opts.extensions = opts.extensions or {}
+    opts.extensions['ui-select'] = { require('telescope.themes').get_dropdown() }
     telescope.setup(opts)
     pcall(telescope.load_extension, 'fzf')
+    pcall(telescope.load_extension, 'ui-select')
   end,
 }

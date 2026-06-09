@@ -1,3 +1,106 @@
+-- ── .NET multi-project debug discovery ─────────────────────────────────────
+-- Clean Architecture solutions have many projects but only a few *runnable*
+-- apps (Api, Worker, …) — exactly the ones with Properties/launchSettings.json.
+-- We discover those, build the chosen one (+ its project references), resolve
+-- its dll, set the content-root cwd, and pull ASPNETCORE_* from launchSettings.
+-- Discovery is per-project, NOT cwd-relative, so it works from a solution root.
+
+local function dotnet_launchable_projects()
+	local files = vim.fn.glob(vim.fn.getcwd() .. "/**/Properties/launchSettings.json", true, true)
+	local projects = {}
+	for _, f in ipairs(files) do
+		if not f:match("/bin/") and not f:match("/obj/") then
+			projects[#projects + 1] = vim.fn.fnamemodify(f, ":h:h") -- strip /Properties/launchSettings.json
+		end
+	end
+	return projects
+end
+
+local function dotnet_dll_for(project_dir)
+	-- a project's own output dir holds exactly one *.runtimeconfig.json (its app dll)
+	local rc = vim.fn.glob(project_dir .. "/bin/Debug/net*/*.runtimeconfig.json", true, true)[1]
+	return rc and (rc:gsub("%.runtimeconfig%.json$", ".dll")) or nil
+end
+
+local function dotnet_env_for(project_dir)
+	local env = { ASPNETCORE_ENVIRONMENT = "Development" }
+	local path = project_dir .. "/Properties/launchSettings.json"
+	if vim.fn.filereadable(path) == 1 then
+		local ok, data = pcall(vim.fn.json_decode, table.concat(vim.fn.readfile(path), "\n"))
+		if ok and type(data) == "table" and data.profiles then
+			-- prefer the http profile (deterministic, no dev-cert dance); else first Project profile
+			local profile = data.profiles.http
+			if not profile then
+				for _, p in pairs(data.profiles) do
+					if p.commandName == "Project" then
+						profile = p
+						break
+					end
+				end
+			end
+			if profile then
+				env = vim.tbl_extend("force", env, profile.environmentVariables or {})
+				if profile.applicationUrl and not env.ASPNETCORE_URLS then
+					env.ASPNETCORE_URLS = profile.applicationUrl
+				end
+			end
+		end
+	end
+	return env
+end
+
+-- Build the chosen project (pulls in its ProjectReferences). Blocks briefly.
+local function dotnet_build(project_dir)
+	local out = vim.fn.system({ "dotnet", "build", "-c", "Debug", project_dir })
+	if vim.v.shell_error ~= 0 then
+		vim.notify("dotnet build failed:\n" .. out, vim.log.levels.ERROR, { title = "dap" })
+		return false
+	end
+	return true
+end
+
+local function debug_dotnet()
+	local dap = require("dap")
+	local projects = dotnet_launchable_projects()
+	if #projects == 0 then
+		return vim.notify(
+			"No launchable .NET project (Properties/launchSettings.json) found under cwd",
+			vim.log.levels.WARN
+		)
+	end
+	local function go(dir)
+		if not dotnet_build(dir) then
+			return
+		end
+		local dll = dotnet_dll_for(dir)
+		if not dll then
+			return vim.notify("Build produced no runnable dll in " .. dir, vim.log.levels.WARN)
+		end
+		dap.run({
+			type = "coreclr",
+			request = "launch",
+			name = "Launch " .. vim.fn.fnamemodify(dll, ":t"),
+			program = dll,
+			cwd = dir, -- content root → appsettings*.json resolve
+			env = dotnet_env_for(dir), -- ASPNETCORE_ENVIRONMENT/URLS from launchSettings.json
+			stopAtEntry = false,
+		})
+	end
+	-- Always show the picker — even for a single project — so launching is an
+	-- explicit choice, never an auto-start.
+	table.sort(projects)
+	vim.ui.select(projects, {
+		prompt = "Debug which .NET project?",
+		format_item = function(p)
+			return vim.fn.fnamemodify(p, ":~:.")
+		end,
+	}, function(c)
+		if c then
+			go(c)
+		end
+	end)
+end
+
 return {
 	"mfussenegger/nvim-dap",
 	dependencies = {
@@ -11,7 +114,15 @@ return {
 		{
 			"<F5>",
 			function()
-				require("dap").continue()
+				local dap = require("dap")
+				-- In a C# buffer with no live session, start via the multi-project
+				-- discovery (build + pick launchable project). Otherwise behave as
+				-- the normal continue/start (resume, or Go/Python configurations).
+				if not dap.session() and vim.bo.filetype == "cs" then
+					debug_dotnet()
+				else
+					dap.continue()
+				end
 			end,
 			desc = "Debug: continue / start",
 		},
@@ -85,6 +196,25 @@ return {
 				require("dap").terminate()
 			end,
 			desc = "Terminate",
+		},
+		{
+			"<leader>dn",
+			function()
+				debug_dotnet()
+			end,
+			desc = "Debug .NET (build + pick project)",
+		},
+		{
+			"<leader>da",
+			function()
+				require("dap").run({
+					type = "coreclr",
+					request = "attach",
+					name = "Attach (.NET)",
+					processId = require("dap.utils").pick_process,
+				})
+			end,
+			desc = "Debug: attach .NET process",
 		},
 	},
 	config = function()
@@ -230,43 +360,11 @@ return {
 				args = { "--interpreter=vscode" },
 			}
 		end
-		-- Build first so the DLL is fresh, then resolve the runnable app DLL by
-		-- its sibling <name>.runtimeconfig.json. Dependency DLLs (Microsoft.*,
-		-- Swashbuckle.*, …) have no runtimeconfig, so they're never picked.
-		local function pick_dll()
-			local out = vim.fn.system({ "dotnet", "build", "-c", "Debug" })
-			if vim.v.shell_error ~= 0 then
-				vim.notify("dotnet build failed:\n" .. out, vim.log.levels.ERROR, { title = "dap" })
-				return dap.ABORT
-			end
-			local cwd = vim.fn.getcwd()
-			local configs = vim.fn.glob(cwd .. "/bin/Debug/net*/*.runtimeconfig.json", true, true)
-			local dlls = vim.tbl_map(function(c)
-				return (c:gsub("%.runtimeconfig%.json$", ".dll"))
-			end, configs)
-			if #dlls == 1 then
-				return dlls[1] -- exactly one app → launch it, no prompt
-			end
-			return vim.fn.input("Path to dll: ", dlls[1] or (cwd .. "/bin/Debug/"), "file")
-		end
-		dap.configurations.cs = {
-			{
-				type = "coreclr",
-				name = "Launch - netcoredbg",
-				request = "launch",
-				program = pick_dll,
-				cwd = "${workspaceFolder}",
-				stopAtEntry = false,
-				-- netcoredbg sends the app's stdout/stderr as DAP output events,
-				-- which nvim-dap prints in the REPL pane (<leader>dr); it doesn't
-				-- honor integratedTerminal, so we don't set it.
-			},
-			{
-				type = "coreclr",
-				name = "Attach - netcoredbg",
-				request = "attach",
-				processId = require("dap.utils").pick_process,
-			},
-		}
+		-- .NET launch + attach are handled programmatically (see the helpers at
+		-- the top of this file): <F5> in a C# buffer — or <leader>dn — builds the
+		-- chosen launchable project and launches its dll via debug_dotnet();
+		-- <leader>da attaches to a running dotnet process. Discovery is
+		-- per-project (launchSettings.json), not cwd-relative, so multi-project
+		-- Clean-Architecture solutions start from the solution root.
 	end,
 }
