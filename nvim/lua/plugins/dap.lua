@@ -1,3 +1,88 @@
+-- ── .NET debug: auto-discover the launchable project + read launchSettings.json ──
+-- Works in any .NET repo with no per-project config: finds the project that owns a
+-- Properties/launchSettings.json, resolves its built dll, sets the content-root cwd,
+-- and pulls ASPNETCORE_ENVIRONMENT/URLS straight out of launchSettings.json.
+local function dotnet_launchable_projects()
+	local files = vim.fn.glob(vim.fn.getcwd() .. "/**/Properties/launchSettings.json", true, true)
+	local projects = {}
+	for _, f in ipairs(files) do
+		if not f:match("/bin/") and not f:match("/obj/") then
+			table.insert(projects, vim.fn.fnamemodify(f, ":h:h")) -- strip /Properties/launchSettings.json
+		end
+	end
+	return projects
+end
+
+local function dotnet_dll_for(project_dir)
+	-- a project's OWN output dir holds exactly one *.runtimeconfig.json (its app dll)
+	local rc = vim.fn.glob(project_dir .. "/bin/Debug/net*/*.runtimeconfig.json", true, true)[1]
+	return rc and (rc:gsub("%.runtimeconfig%.json$", ".dll")) or nil
+end
+
+local function dotnet_env_for(project_dir)
+	local env = { ASPNETCORE_ENVIRONMENT = "Development" }
+	local path = project_dir .. "/Properties/launchSettings.json"
+	if vim.fn.filereadable(path) == 1 then
+		local ok, data = pcall(vim.fn.json_decode, table.concat(vim.fn.readfile(path), "\n"))
+		if ok and type(data) == "table" and data.profiles then
+			-- prefer the http profile (deterministic, no dev-cert dance); else first Project profile
+			local profile = data.profiles.http
+			if not profile then
+				for _, p in pairs(data.profiles) do
+					if p.commandName == "Project" then
+						profile = p
+						break
+					end
+				end
+			end
+			if profile then
+				env = vim.tbl_extend("force", env, profile.environmentVariables or {})
+				if profile.applicationUrl and not env.ASPNETCORE_URLS then
+					env.ASPNETCORE_URLS = profile.applicationUrl
+				end
+			end
+		end
+	end
+	return env
+end
+
+local function debug_dotnet()
+	local dap = require("dap")
+	local projects = dotnet_launchable_projects()
+	if #projects == 0 then
+		return vim.notify("No launchable .NET project (Properties/launchSettings.json) found", vim.log.levels.WARN)
+	end
+	local function go(dir)
+		local dll = dotnet_dll_for(dir)
+		if not dll then
+			return vim.notify("Not built: " .. dir .. " — run `dotnet build`", vim.log.levels.WARN)
+		end
+		dap.run({
+			type = "coreclr",
+			request = "launch",
+			name = "Launch " .. vim.fn.fnamemodify(dll, ":t"),
+			program = dll,
+			cwd = dir, -- content root → appsettings*.json resolve
+			env = dotnet_env_for(dir), -- ASPNETCORE_ENVIRONMENT/URLS from launchSettings.json
+			stopAtEntry = false,
+		})
+	end
+	if #projects == 1 then
+		go(projects[1])
+	else
+		vim.ui.select(projects, {
+			prompt = "Debug which .NET project?",
+			format_item = function(p)
+				return vim.fn.fnamemodify(p, ":~:.")
+			end,
+		}, function(c)
+			if c then
+				go(c)
+			end
+		end)
+	end
+end
+
 return {
 	"mfussenegger/nvim-dap",
 	dependencies = {
@@ -84,6 +169,13 @@ return {
 				require("dap").terminate()
 			end,
 			desc = "Terminate",
+		},
+		{
+			"<leader>dn",
+			function()
+				debug_dotnet()
+			end,
+			desc = "Debug .NET (auto-discover)",
 		},
 	},
 	config = function()
