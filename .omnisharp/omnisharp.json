@@ -1,0 +1,15 @@
+{
+  "RoslynExtensionsOptions": {
+    "enableDecompilationSupport": true,
+    "enableImportCompletion": true,
+    "enableAnalyzersSupport": true,
+    "documentAnalysisTimeoutMs": 30000
+  },
+  "FormattingOptions": {
+    "OrganizeImports": true,
+    "EnableEditorConfigSupport": true
+  },
+  "MsBuild": {
+    "LoadProjectsOnDemand": false
+  }
+}
