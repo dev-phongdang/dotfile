@@ -9,6 +9,12 @@ return {
     'nvim-telescope/telescope-ui-select.nvim',
   },
   cmd = 'Telescope',
+  -- Load after startup so telescope-ui-select can register itself as the
+  -- vim.ui.select backend before the first <leader>ca code-action prompt.
+  -- Without this, code actions triggered before telescope's first use fall
+  -- back to the core inputlist (rendered as stacked Confirm/Input boxes
+  -- under noice) instead of a navigable picker.
+  event = 'VeryLazy',
   keys = {
     { '<leader>ff', '<cmd>Telescope find_files<cr>',  desc = 'Find files' },
     { '<leader>fg', '<cmd>Telescope live_grep<cr>',   desc = 'Live grep' },

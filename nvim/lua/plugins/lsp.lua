@@ -134,12 +134,7 @@ return {
 		local function silence_oor(method)
 			local orig = vim.lsp.handlers[method]
 			vim.lsp.handlers[method] = function(err, result, ctx, config)
-				if
-					err
-					and err.code == -32603
-					and err.message
-					and err.message:match("ArgumentOutOfRangeException")
-				then
+				if err and err.code == -32603 and err.message and err.message:match("ArgumentOutOfRangeException") then
 					return -- swallow OmniSharp's known sync bug
 				end
 				if orig then
@@ -151,6 +146,35 @@ return {
 		silence_oor("textDocument/foldingRange")
 		silence_oor("textDocument/codeAction")
 		silence_oor("textDocument/references")
+
+		-- Globally suppress noisy Roslyn/OmniSharp IDE analyzer diagnostics.
+		-- omnisharp-roslyn does not honour `dotnet_diagnostic.<id>.severity =
+		-- none` from .editorconfig for these IDE* code-style rules (confirmed:
+		-- they keep surfacing at their default Hint severity after a cold
+		-- restart), so we drop them client-side instead. Codes listed here
+		-- never reach the diagnostic list, signs, or virtual text. IDE* codes
+		-- are C#-only, so this is safe across all servers. Add `code = true`
+		-- to disable one.
+		--
+		-- We wrap vim.diagnostic.set (not the publishDiagnostics handler)
+		-- because nvim 0.11+ may receive these via *pull* diagnostics
+		-- (textDocument/diagnostic), which bypass the push handler. Both push
+		-- and pull paths funnel through vim.diagnostic.set, so this is the one
+		-- chokepoint that catches every case.
+		local suppressed_diagnostics = {
+			["IDE0320"] = true, -- Make anonymous function static
+		}
+		local orig_set = vim.diagnostic.set
+		---@diagnostic disable-next-line: duplicate-set-field
+		vim.diagnostic.set = function(namespace, bufnr, diagnostics, opts)
+			if diagnostics and #diagnostics > 0 then
+				diagnostics = vim.tbl_filter(function(d)
+					local code = d.code or (d.user_data and d.user_data.lsp and d.user_data.lsp.code)
+					return not (code and suppressed_diagnostics[tostring(code)])
+				end, diagnostics)
+			end
+			return orig_set(namespace, bufnr, diagnostics, opts)
+		end
 
 		-- ──────────────────────────────────────────────────────────────────────
 		-- LSP progress → vim.notify
