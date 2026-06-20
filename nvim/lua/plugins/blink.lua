@@ -16,6 +16,7 @@ return {
 	opts = {
 		keymap = {
 			preset = "enter", -- <CR> accepts, <Tab> expands snippet, <C-Space> opens menu
+			["<Tab>"] = { "accept", "snippet_forward", "fallback" }, -- <Tab> also accepts the selection
 			["<C-j>"] = { "select_next", "fallback" },
 			["<C-k>"] = { "select_prev", "fallback" },
 			["<C-d>"] = { "scroll_documentation_down", "fallback" },
