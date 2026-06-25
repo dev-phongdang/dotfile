@@ -112,7 +112,7 @@ return {
 	},
 	keys = {
 		{
-			"<F5>",
+			"<leader>dr",
 			function()
 				local dap = require("dap")
 				-- In a C# buffer with no live session, start via the multi-project
@@ -169,11 +169,11 @@ return {
 			desc = "Conditional breakpoint",
 		},
 		{
-			"<leader>dr",
+			"<leader>dp",
 			function()
 				require("dap").repl.open()
 			end,
-			desc = "REPL",
+			desc = "REPL (prompt)",
 		},
 		{
 			"<leader>dl",
@@ -273,6 +273,47 @@ return {
 		dap.listeners.before.event_exited.dapui_config = function()
 			dapui.close()
 		end
+
+		-- Refresh the Scopes panel after a REPL evaluation. nvim-dap-ui only
+		-- re-fetches scopes on a `stopped` event (stop/step); a REPL expression
+		-- like `a = a**a` mutates the process but debugpy emits no `stopped` or
+		-- `invalidated` event, so the panel keeps showing the stale value. Re-
+		-- issuing a `scopes` request for the current frame flows through dap-ui's
+		-- own listener chain and re-renders with live values.
+		dap.listeners.after.evaluate.dapui_refresh_scopes = function(session, err, _, request)
+			if err or not request or request.context ~= "repl" then
+				return
+			end
+			local frame = session.current_frame
+			if frame then
+				session:request("scopes", { frameId = frame.id }, function() end)
+			end
+		end
+
+		-- nvim-dap's REPL repeats the last command when an empty line is
+		-- submitted (repl.lua: `if text == '' then text = history.last`). For a
+		-- mutating assignment like `a = a**2` that means every stray <CR> silently
+		-- re-runs it (squaring `a` again) with no echo — looking like the prompt
+		-- "does nothing". Make a bare <CR> on an empty prompt line a no-op; real
+		-- input still submits, and Up/Down still recall history.
+		vim.api.nvim_create_autocmd("FileType", {
+			pattern = "dap-repl",
+			callback = function(ev)
+				vim.keymap.set("i", "<CR>", function()
+					local prompt = vim.fn.prompt_getprompt(ev.buf)
+					if vim.api.nvim_get_current_line():sub(#prompt + 1):match("^%s*$") then
+						return ""
+					end
+					return "<CR>"
+				end, { buffer = ev.buf, expr = true, replace_keycodes = true, desc = "DAP REPL: ignore empty submit" })
+			end,
+		})
+
+		-- NOTE: nvim-dap glues program stdout onto the input line (e.g.
+		-- `dap> print(a)20`) because Session:event_output appends output with
+		-- newline=false. Inspect values by typing the bare expression instead
+		-- (`dap> a`) — expression results go through evaluate_handler with
+		-- newline=true, so they render cleanly on their own line.
 
 		-- Pretty breakpoint icons
 		vim.fn.sign_define("DapBreakpoint", { text = "●", texthl = "DapBreakpoint", linehl = "", numhl = "" })

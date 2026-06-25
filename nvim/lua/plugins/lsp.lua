@@ -208,6 +208,14 @@ return {
 				if not client then
 					return
 				end
+				-- This toast pipeline exists only to tame OmniSharp's chatty
+				-- solution-load progress. Every other server (basedpyright in
+				-- workspace mode especially) re-emits begin→end cycles
+				-- constantly, which spammed a "ready" toast per cycle. Let
+				-- noice render their progress in its quiet mini-view instead.
+				if client.name ~= "omnisharp" then
+					return
+				end
 				local token = args.data.params.token
 				local value = args.data.params.value
 				if not value then
