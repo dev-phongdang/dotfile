@@ -58,3 +58,5 @@ map("n", "<leader>se", "<C-w>=", { desc = "Equal width" })
 map("n", "<leader>sx", "<cmd>close<cr>", { desc = "Close split" })
 -- Custom opera
 map("n", "<leader>oo", "o<Esc>", { desc = "Open blank line bellow (stay in normal)" })
+-- Copy content of whole buffer
+map("n", "<C-a>", "mzggVGy`z", { desc = "Copy content of whole buffer" })
