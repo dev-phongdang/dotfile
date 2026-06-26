@@ -64,6 +64,13 @@ return {
 					client.server_capabilities.hoverProvider = false
 				end
 
+				-- roslyn: re-pick the target solution for this buffer. Use when a
+				-- .cs file lands in the canonical miscellaneous-files project
+				-- (stuck "Restoring Canonical.csproj") so it binds to the right .sln.
+				if client.name == "roslyn" then
+					map("n", "<leader>lR", "<cmd>Roslyn target<cr>", "Roslyn: target solution")
+				end
+
 				-- Inlay hints
 				if client:supports_method("textDocument/inlayHint") then
 					vim.lsp.inlay_hint.enable(true, { bufnr = bufnr })
@@ -147,13 +154,23 @@ return {
 		-- in place — and emit a one-shot toast when the workspace transitions
 		-- to ready. Tokens distinguish concurrent operations.
 		-- ──────────────────────────────────────────────────────────────────────
-		local progress_state = {} -- [client_id][token] = { title, percent }
+		local progress_state = {} -- [client_id][token] = { title, percent, updated }
 		local notify_handles = {} -- [client_id] = handle (for in-place replace)
+		-- Safety net: a token that begins/reports but never sends `end` would
+		-- otherwise pin its toast forever. Roslyn does exactly this for its
+		-- internal "Restoring Canonical.csproj" miscellaneous-files project (a
+		-- synthetic ~/T/roslyn-canonical-misc project it spins up for .cs files
+		-- not covered by the loaded solution, then tries to restore and never
+		-- finishes — dotnet/roslyn#82999). Evict any token idle past this.
+		local PROGRESS_STALE_MS = 8000
 
 		local function format_progress(client_id)
+			local now = vim.uv.now()
 			local parts = {}
-			for _, v in pairs(progress_state[client_id] or {}) do
-				if v.percent then
+			for token, v in pairs(progress_state[client_id] or {}) do
+				if now - (v.updated or 0) > PROGRESS_STALE_MS then
+					progress_state[client_id][token] = nil -- orphaned/stuck; drop it
+				elseif v.percent then
 					table.insert(parts, ("%s %d%%"):format(v.title, v.percent))
 				else
 					table.insert(parts, v.title)
@@ -189,6 +206,7 @@ return {
 					progress_state[client.id][token] = {
 						title = value.title or "working",
 						percent = value.percentage,
+						updated = vim.uv.now(),
 					}
 				elseif value.kind == "report" then
 					if progress_state[client.id][token] then
@@ -197,6 +215,7 @@ return {
 						if value.message then
 							progress_state[client.id][token].title = value.message
 						end
+						progress_state[client.id][token].updated = vim.uv.now()
 					end
 				elseif value.kind == "end" then
 					progress_state[client.id][token] = nil
@@ -217,7 +236,10 @@ return {
 						title = client.name,
 						replace = notify_handles[client.id],
 						hide_from_history = true,
-						timeout = false, -- keep visible until "ready" replaces it
+						-- Auto-dismiss if reports stop; active progress keeps
+						-- replacing this in place, so it stays during real work
+						-- but never pins on a stalled token.
+						timeout = PROGRESS_STALE_MS,
 					})
 				end
 			end,
