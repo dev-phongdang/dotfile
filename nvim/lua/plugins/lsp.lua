@@ -4,7 +4,6 @@ return {
 	dependencies = {
 		"mason-org/mason.nvim",
 		"mason-org/mason-lspconfig.nvim",
-		"Hoffs/omnisharp-extended-lsp.nvim",
 	},
 	config = function()
 		-- Diagnostics UI (signs now live inside diagnostic.config, not sign_define)
@@ -38,22 +37,13 @@ return {
 					vim.keymap.set(mode, lhs, rhs, { buffer = bufnr, desc = desc, silent = true })
 				end
 
-				-- For OmniSharp, route gd/gi/gy/gr through omnisharp_extended
-				-- so $metadata$ + source-generated URIs are materialised as
-				-- read-only buffers before navigation. Stock vim.lsp.buf.*
-				-- skips this resolution and shows "No location found".
-				if client.name == "omnisharp" then
-					local ext = require("omnisharp_extended")
-					map("n", "gd", ext.lsp_definition, "Go to definition (omnisharp)")
-					map("n", "gi", ext.lsp_implementation, "Implementation (omnisharp)")
-					map("n", "gy", ext.lsp_type_definition, "Type definition (omnisharp)")
-					map("n", "gr", ext.lsp_references, "References (omnisharp)")
-				else
-					map("n", "gd", vim.lsp.buf.definition, "Go to definition")
-					map("n", "gi", vim.lsp.buf.implementation, "Implementation")
-					map("n", "gy", vim.lsp.buf.type_definition, "Type definition")
-					map("n", "gr", vim.lsp.buf.references, "References")
-				end
+				-- Navigation. roslyn.nvim materialises decompiled/metadata and
+				-- source-generated targets through standard LSP, so the stock
+				-- handlers resolve C# definitions too — no per-server routing.
+				map("n", "gd", vim.lsp.buf.definition, "Go to definition")
+				map("n", "gi", vim.lsp.buf.implementation, "Implementation")
+				map("n", "gy", vim.lsp.buf.type_definition, "Type definition")
+				map("n", "gr", vim.lsp.buf.references, "References")
 				map("n", "gD", vim.lsp.buf.declaration, "Go to declaration")
 				map("n", "K", vim.lsp.buf.hover, "Hover docs")
 				map("n", "<C-k>", vim.lsp.buf.signature_help, "Signature help")
@@ -85,14 +75,10 @@ return {
 					end, "Toggle inlay hints")
 				end
 
-				-- Document highlight.
-				--
-				-- OmniSharp's DocumentHighlight handler crashes with
-				-- ArgumentOutOfRangeException when called on a buffer it
-				-- hasn't fully synced — typically virtual $metadata$ buffers
-				-- and during initial workspace load. We guard the autocmd
-				-- so it only fires on real file:// buffers with content
-				-- the server has acknowledged.
+				-- Document highlight. Guarded to fire only on real file://
+				-- buffers, skipping decompiled/metadata and source-generated
+				-- buffers (custom URI schemes), where highlighting content the
+				-- server has not yet acknowledged is wasteful at best.
 				if client:supports_method("textDocument/documentHighlight") then
 					local group = vim.api.nvim_create_augroup("LspDocHighlight_" .. bufnr, { clear = true })
 					vim.api.nvim_create_autocmd({ "CursorHold", "CursorHoldI" }, {
@@ -124,37 +110,12 @@ return {
 			capabilities = require("blink.cmp").get_lsp_capabilities(),
 		})
 
-		-- Filter OmniSharp's noisy InternalError responses at the LSP layer
-		-- (NOT via vim.notify — noice.nvim owns that). OmniSharp throws
-		-- ArgumentOutOfRangeException from a handful of handlers when the
-		-- buffer it sees doesn't match what nvim asked about — typically
-		-- DocumentHighlight, FindUsages, FoldingRange during mid-sync.
-		-- We wrap each affected default handler so the specific known bug
-		-- is swallowed and real errors still surface.
-		local function silence_oor(method)
-			local orig = vim.lsp.handlers[method]
-			vim.lsp.handlers[method] = function(err, result, ctx, config)
-				if err and err.code == -32603 and err.message and err.message:match("ArgumentOutOfRangeException") then
-					return -- swallow OmniSharp's known sync bug
-				end
-				if orig then
-					return orig(err, result, ctx, config)
-				end
-			end
-		end
-		silence_oor("textDocument/documentHighlight")
-		silence_oor("textDocument/foldingRange")
-		silence_oor("textDocument/codeAction")
-		silence_oor("textDocument/references")
-
-		-- Globally suppress noisy Roslyn/OmniSharp IDE analyzer diagnostics.
-		-- omnisharp-roslyn does not honour `dotnet_diagnostic.<id>.severity =
-		-- none` from .editorconfig for these IDE* code-style rules (confirmed:
-		-- they keep surfacing at their default Hint severity after a cold
-		-- restart), so we drop them client-side instead. Codes listed here
-		-- never reach the diagnostic list, signs, or virtual text. IDE* codes
-		-- are C#-only, so this is safe across all servers. Add `code = true`
-		-- to disable one.
+		-- Globally suppress noisy Roslyn IDE analyzer diagnostics. These IDE*
+		-- code-style rules keep surfacing at their default Hint severity even
+		-- when silenced via .editorconfig, so we drop them client-side instead.
+		-- Codes listed here never reach the diagnostic list, signs, or virtual
+		-- text. IDE* codes are C#-only, so this is safe across all servers. Add
+		-- `code = true` to disable one.
 		--
 		-- We wrap vim.diagnostic.set (not the publishDiagnostics handler)
 		-- because nvim 0.11+ may receive these via *pull* diagnostics
@@ -180,7 +141,7 @@ return {
 		-- LSP progress → vim.notify
 		--
 		-- nvim 0.10+ surfaces every LSP `$/progress` notification as an
-		-- `LspProgress` autocmd. OmniSharp is chatty during solution load
+		-- `LspProgress` autocmd. Roslyn is chatty during solution load
 		-- (per-project parse, restore, analyzer setup), so we collapse
 		-- per-client progress to a single rolling notification — replaced
 		-- in place — and emit a one-shot toast when the workspace transitions
@@ -208,12 +169,12 @@ return {
 				if not client then
 					return
 				end
-				-- This toast pipeline exists only to tame OmniSharp's chatty
+				-- This toast pipeline exists only to tame Roslyn's chatty
 				-- solution-load progress. Every other server (basedpyright in
 				-- workspace mode especially) re-emits begin→end cycles
 				-- constantly, which spammed a "ready" toast per cycle. Let
 				-- noice render their progress in its quiet mini-view instead.
-				if client.name ~= "omnisharp" then
+				if client.name ~= "roslyn" then
 					return
 				end
 				local token = args.data.params.token
@@ -260,6 +221,54 @@ return {
 					})
 				end
 			end,
+		})
+
+		-- C# / Roslyn. The roslyn.nvim plugin (lua/plugins/roslyn.lua) owns
+		-- solution/target detection and enables the "roslyn" client itself, so
+		-- it is configured here but deliberately kept OUT of the `servers` table
+		-- + vim.lsp.enable() below: enabling it twice would spawn a second,
+		-- mis-targeted client. Settings use Roslyn's `csharp|*` namespaced keys
+		-- (the same options the VS Code C# extension exposes).
+		vim.lsp.config("roslyn", {
+			settings = {
+				["csharp|background_analysis"] = {
+					dotnet_analyzer_diagnostics_scope = "fullSolution",
+					dotnet_compiler_diagnostics_scope = "fullSolution",
+				},
+				["csharp|inlay_hints"] = {
+					csharp_enable_inlay_hints_for_implicit_object_creation = true,
+					csharp_enable_inlay_hints_for_implicit_variable_types = true,
+					csharp_enable_inlay_hints_for_lambda_parameter_types = true,
+					csharp_enable_inlay_hints_for_types = true,
+					dotnet_enable_inlay_hints_for_indexer_parameters = true,
+					dotnet_enable_inlay_hints_for_literal_parameters = true,
+					dotnet_enable_inlay_hints_for_object_creation_parameters = true,
+					dotnet_enable_inlay_hints_for_other_parameters = true,
+					dotnet_enable_inlay_hints_for_parameters = true,
+				},
+				["csharp|code_lens"] = {
+					dotnet_enable_references_code_lens = true,
+				},
+				["csharp|completion"] = {
+					dotnet_show_completion_items_from_unimported_namespaces = true,
+					dotnet_show_name_completion_suggestions = true,
+				},
+				["csharp|symbol_search"] = {
+					dotnet_search_reference_assemblies = true,
+				},
+				-- Go-to-definition into external assemblies. The VS Code C#
+				-- extension defaults these to true *client-side* and pushes them
+				-- to the server; a bare LSP client like nvim must send them
+				-- explicitly or the server returns no location for metadata
+				-- symbols (no decompiled buffer to jump to).
+				["csharp|navigation"] = {
+					dotnet_navigate_to_decompiled_sources = true,
+					dotnet_navigate_to_source_link_and_embedded_sources = true,
+				},
+				["csharp|formatting"] = {
+					dotnet_organize_imports_on_format = true,
+				},
+			},
 		})
 
 		-- Per-server overrides. These deep-merge over nvim-lspconfig's shipped
@@ -324,22 +333,6 @@ return {
 						diagnostics = { globals = { "vim" } },
 						telemetry = { enable = false },
 						hint = { enable = true },
-					},
-				},
-			},
-			-- OmniSharp. Decompilation + metadata navigation is enabled via
-			-- ~/.omnisharp/omnisharp.json. The omnisharp_extended.* commands
-			-- (wired in LspAttach above) handle $metadata$ URI resolution.
-			omnisharp = {
-				filetypes = { "cs" },
-				root_markers = { "*.sln", "*.slnx", "*.csproj", ".git" },
-				settings = {
-					-- Surface the same settings via LSP for completeness;
-					-- omnisharp.json takes precedence at runtime.
-					["csharp"] = {
-						format = { enable = true },
-						semanticHighlighting = { enabled = true },
-						symbolSearch = { includeReferenceAssemblies = true },
 					},
 				},
 			},
